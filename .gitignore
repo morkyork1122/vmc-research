@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+monitor_state.json
+node_modules/
+dist/
+.venv/
