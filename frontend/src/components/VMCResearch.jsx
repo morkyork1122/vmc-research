@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 
-const API_BASE = "/api";
+const API_BASE = "https://vmc-research-production.up.railway.app/api";
 
 const ASSETS     = ["BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT","DOGE/USDT","AVAX/USDT","MATIC/USDT"];
 const TIMEFRAMES = ["15m","1H","4H","1D","1W"];
