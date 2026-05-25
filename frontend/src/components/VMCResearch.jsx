@@ -819,9 +819,3 @@ const runLiveScan = async () => {
   } catch(e) { clearInterval(t); setError(e.message); }
   finally { setLoading(false); }
 };
-useEffect(() => {
-  const interval = setInterval(() => {
-    if (!busy) runLiveScan();
-  }, 5 * 60 * 1000); // every 5 minutes
-  return () => clearInterval(interval);
-}, [asset, timeframe, activeSig, busy]);
