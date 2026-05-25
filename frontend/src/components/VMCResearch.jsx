@@ -644,9 +644,10 @@ export default function VMCResearch() {
           <button className="btn btn-b" onClick={()=>runPipeline("backtest")} disabled={busy}>⚡ Backtest</button>
           <button className="btn btn-p" onClick={runMF} disabled={busy}>{mfLoading?"Loading...":"💰 Money Flow"}</button>
           <button className="btn btn-o" onClick={runMTF} disabled={busy}>{mtfLoading?"Loading...":"🔭 MTF"}</button>
-          <button className="btn btn-g" style={{background:"var(--gold)",color:"#000"}}
+          <button className="btn" 
+  style={{background:"var(--gold)",color:"#000",alignSelf:"flex-end",padding:"8px 18px",border:"none",borderRadius:"5px",fontFamily:"var(--mono)",fontSize:"11px",fontWeight:700,cursor:"pointer"}}
   onClick={runLiveScan} disabled={busy}>
-  {loading ? "Scanning..." : "⚡ Live Scan"}
+  {mfLoading ? "Scanning..." : "⚡ Live Scan"}
 </button>
         </div>
         
@@ -792,37 +793,43 @@ export default function VMCResearch() {
   );
 }
 const runLiveScan = async () => {
-  setLoading(true); setError(null);
-  stepRef.current = 0; setLoadStep(0);
-  const t = setInterval(() => {
-    stepRef.current = Math.min(stepRef.current + 1, 5);
-    setLoadStep(stepRef.current);
-  }, 1500);
+  if (busy) return;
+  setMfLoading(true);
+  setError(null);
   try {
     const r = await fetch(
       `${API_BASE}/live-scan?symbol=${encodeURIComponent(asset)}&timeframe=${timeframe}&signal=${activeSig}`
     );
     if (!r.ok) throw new Error(`Error ${r.status}`);
-    clearInterval(t); setLoadStep(6);
     const d = await r.json();
-    // Feed results into existing state
+
     setMfData(d.money_flow);
     setMtfData(d.mtf ? { ...d.mtf, overall_score: d.overall_score, grade: d.grade } : null);
-    setResult(prev => ({ ...prev,
-      symbol: d.symbol, timeframe: d.timeframe, mode: "live",
+    setResult(prev => ({
+      ...(prev || {}),
+      symbol:         d.symbol,
+      timeframe:      d.timeframe,
+      mode:           "live",
+      candles_used:   150,
+      backtest_stats: prev?.backtest_stats || null,
+      recent_trades:  prev?.recent_trades  || [],
+      ai_report:      prev?.ai_report      || null,
       latest_signals: [{ close: d.close, wt1: d.wt1, wt2: d.wt2, timestamp: d.timestamp }],
     }));
-    // Open chat with the analysis pre-loaded
+
     if (d.ai_analysis) {
       setChatOpen(true);
     }
     setTab("mf");
-  } catch(e) { clearInterval(t); setError(e.message); }
-  finally { setLoading(false); }
+  } catch(e) {
+    setError(e.message);
+  } finally {
+    setMfLoading(false);
+  }
+};
   useEffect(() => {
     const interval = setInterval(() => {
       if (!busy) runLiveScan();
     }, 5 * 60 * 1000); // every 5 minutes
     return () => clearInterval(interval);
   }, [asset, timeframe, activeSig, busy]);
-};
