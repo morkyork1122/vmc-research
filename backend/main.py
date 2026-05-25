@@ -2,7 +2,7 @@
 VMC Cipher B Research API v5
 VMC + Money Flow + MTF + AI Chat + Auto-Analysis + 24/7 Monitor
 """
-
+import pandas as pd
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -374,6 +374,79 @@ async def meta():
 
 
 # ─── Entry ────────────────────────────────────────────────────────────────────
+@app.get("/api/live-scan")
+async def live_scan(
+    symbol:    str = Query("BTC/USDT"),
+    timeframe: str = Query("4H"),
+    signal:    str = Query("green_dot"),
+):
+    """
+    One-shot endpoint: fetch live candles → compute everything →
+    return VMC signals + money flow + MTF + AI analysis.
+    """
+    symbol = validate_symbol(symbol)
+
+    # Fetch + compute
+    try:
+        df = await fetch_ohlcv(symbol, timeframe, limit=150)
+        df = compute_all(df)
+        df = compute_money_flow(df)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Fetch failed: {e}")
+
+    closed_idx    = len(df) - 2
+    latest_closed = df.iloc[closed_idx]
+
+    bar = {
+        "timestamp": str(latest_closed["timestamp"]),
+        "close":     round(float(latest_closed["close"]), 4),
+        "wt1":       round(float(latest_closed["wt1"]), 2),
+        "wt2":       round(float(latest_closed["wt2"]), 2),
+        "rsimfi":    round(float(latest_closed["rsimfi"]) if pd.notna(latest_closed["rsimfi"]) else 0.0, 2),
+    }
+
+    # Active signals on latest closed candle
+    signal_types = ["green_dot","red_dot","gold_dot","bull_div","bear_div","bull_div_hidden","bear_div_hidden"]
+    active_signals = [s for s in signal_types if bool(latest_closed.get(s, False))]
+
+    # Money flow
+    mf = compute_signal_strength(df, signal, closed_idx)
+
+    # MTF confirmation
+    try:
+        mtf = await analyze_htf(symbol, timeframe, signal)
+    except Exception:
+        mtf = None
+
+    # AI analysis
+    analysis = ""
+    if mtf:
+        try:
+            analysis = await generate_auto_analysis(
+                symbol=symbol, timeframe=timeframe,
+                signal_type=signal, bar=bar, mf=mf, mtf=mtf or {},
+            )
+        except Exception:
+            pass
+
+    grade_info = combined_score(mf["score"], mtf["htf_score"] if mtf else 50)
+
+    return {
+        "symbol":         symbol,
+        "timeframe":      timeframe,
+        "signal":         signal,
+        "timestamp":      bar["timestamp"],
+        "close":          bar["close"],
+        "wt1":            bar["wt1"],
+        "wt2":            bar["wt2"],
+        "rsimfi":         bar["rsimfi"],
+        "active_signals": active_signals,
+        "money_flow":     mf,
+        "mtf":            mtf,
+        "overall_score":  grade_info["overall_score"],
+        "grade":          grade_info["grade"],
+        "ai_analysis":    analysis,
+    }
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))

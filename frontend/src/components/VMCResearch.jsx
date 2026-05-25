@@ -645,6 +645,10 @@ export default function VMCResearch() {
           <button className="btn btn-p" onClick={runMF} disabled={busy}>{mfLoading?"Loading...":"💰 Money Flow"}</button>
           <button className="btn btn-o" onClick={runMTF} disabled={busy}>{mtfLoading?"Loading...":"🔭 MTF"}</button>
         </div>
+        <button className="btn btn-g" style={{background:"var(--gold)",color:"#000"}}
+  onClick={runLiveScan} disabled={busy}>
+  {loading ? "Scanning..." : "⚡ Live Scan"}
+</button>
 
         <div className="body-wrap">
           <div className="main-panel">
@@ -786,3 +790,38 @@ export default function VMCResearch() {
     </>
   );
 }
+const runLiveScan = async () => {
+  setLoading(true); setError(null);
+  stepRef.current = 0; setLoadStep(0);
+  const t = setInterval(() => {
+    stepRef.current = Math.min(stepRef.current + 1, 5);
+    setLoadStep(stepRef.current);
+  }, 1500);
+  try {
+    const r = await fetch(
+      `${API_BASE}/live-scan?symbol=${encodeURIComponent(asset)}&timeframe=${timeframe}&signal=${activeSig}`
+    );
+    if (!r.ok) throw new Error(`Error ${r.status}`);
+    clearInterval(t); setLoadStep(6);
+    const d = await r.json();
+    // Feed results into existing state
+    setMfData(d.money_flow);
+    setMtfData(d.mtf ? { ...d.mtf, overall_score: d.overall_score, grade: d.grade } : null);
+    setResult(prev => ({ ...prev,
+      symbol: d.symbol, timeframe: d.timeframe, mode: "live",
+      latest_signals: [{ close: d.close, wt1: d.wt1, wt2: d.wt2, timestamp: d.timestamp }],
+    }));
+    // Open chat with the analysis pre-loaded
+    if (d.ai_analysis) {
+      setChatOpen(true);
+    }
+    setTab("mf");
+  } catch(e) { clearInterval(t); setError(e.message); }
+  finally { setLoading(false); }
+};
+useEffect(() => {
+  const interval = setInterval(() => {
+    if (!busy) runLiveScan();
+  }, 5 * 60 * 1000); // every 5 minutes
+  return () => clearInterval(interval);
+}, [asset, timeframe, activeSig, busy]);
