@@ -644,11 +644,12 @@ export default function VMCResearch() {
           <button className="btn btn-b" onClick={()=>runPipeline("backtest")} disabled={busy}>⚡ Backtest</button>
           <button className="btn btn-p" onClick={runMF} disabled={busy}>{mfLoading?"Loading...":"💰 Money Flow"}</button>
           <button className="btn btn-o" onClick={runMTF} disabled={busy}>{mtfLoading?"Loading...":"🔭 MTF"}</button>
-        </div>
-        <button className="btn btn-g" style={{background:"var(--gold)",color:"#000"}}
+          <button className="btn btn-g" style={{background:"var(--gold)",color:"#000"}}
   onClick={runLiveScan} disabled={busy}>
   {loading ? "Scanning..." : "⚡ Live Scan"}
 </button>
+        </div>
+        
 
         <div className="body-wrap">
           <div className="main-panel">
@@ -818,4 +819,10 @@ const runLiveScan = async () => {
     setTab("mf");
   } catch(e) { clearInterval(t); setError(e.message); }
   finally { setLoading(false); }
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!busy) runLiveScan();
+    }, 5 * 60 * 1000); // every 5 minutes
+    return () => clearInterval(interval);
+  }, [asset, timeframe, activeSig, busy]);
 };
