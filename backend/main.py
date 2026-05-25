@@ -1,6 +1,6 @@
 """
-VMC Cipher B Research API v4
-VMC + Money Flow + Multi-Timeframe Confirmation + 24/7 Monitor
+VMC Cipher B Research API v5
+VMC + Money Flow + MTF + AI Chat + Auto-Analysis + 24/7 Monitor
 """
 
 from dotenv import load_dotenv
@@ -9,26 +9,29 @@ load_dotenv()
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
+from pydantic import BaseModel
+from typing import Optional
+import uvicorn, os
 
 from monitor_config import MONITORED_PAIRS, DEFAULT_SIGNALS
 from models import ResearchRequest, ResearchResponse
 from indicators.vmc_cipher_b import compute_all, get_latest_signals
-from indicators.money_flow import (
-    compute_money_flow, get_money_flow_summary, compute_signal_strength
-)
+from indicators.money_flow import compute_money_flow, get_money_flow_summary, compute_signal_strength
 from services.data_fetcher import fetch_ohlcv, validate_symbol
 from services.backtester import VMCBacktester, BacktestConfig
 from services.ai_analyst import generate_research_report
+from services.ai_chat import chat, generate_auto_analysis
 from services.mtf_analyzer import analyze_htf, combined_score, get_higher_timeframe
 from services.monitor import monitor_manager
 from services.notifier import send_alert
 from services.webhook_receiver import router as webhook_router
 
 
+# ─── Lifespan ─────────────────────────────────────────────────────────────────
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[App] Starting VMC Research API v4")
+    print("[App] Starting VMC Research API v5")
     for pair in MONITORED_PAIRS:
         if "signals" not in pair:
             pair["signals"] = DEFAULT_SIGNALS
@@ -39,7 +42,7 @@ async def lifespan(app: FastAPI):
     await monitor_manager.stop()
 
 
-app = FastAPI(title="VMC Cipher B Research API", version="4.0.0", lifespan=lifespan)
+app = FastAPI(title="VMC Cipher B Research API", version="5.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"],
@@ -47,6 +50,20 @@ app.add_middleware(
 )
 
 app.include_router(webhook_router)
+
+
+# ─── Chat Models ──────────────────────────────────────────────────────────────
+
+class ChatMessage(BaseModel):
+    message:        str
+    symbol:         str          = "BTC/USDT"
+    timeframe:      str          = "4H"
+    signal_type:    Optional[str] = None
+    backtest_stats: Optional[dict] = None
+    money_flow:     Optional[dict] = None
+    mtf:            Optional[dict] = None
+    latest_bar:     Optional[dict] = None
+    history:        Optional[list] = None
 
 
 # ─── Health ───────────────────────────────────────────────────────────────────
@@ -57,7 +74,32 @@ async def health():
         {"symbol": m.symbol, "timeframe": m.timeframe, "interval_s": m.interval}
         for m in monitor_manager._monitors
     ]
-    return {"status": "ok", "version": "4.0.0", "monitors": monitors}
+    return {"status": "ok", "version": "5.0.0", "monitors": monitors}
+
+
+# ─── AI Chat ─────────────────────────────────────────────────────────────────
+
+@app.post("/api/chat")
+async def ai_chat(req: ChatMessage):
+    """
+    Chat with the AI analyst using current dashboard context.
+    Sends the question along with all available market data.
+    """
+    try:
+        response = await chat(
+            message        = req.message,
+            symbol         = req.symbol,
+            timeframe      = req.timeframe,
+            signal_type    = req.signal_type,
+            backtest_stats = req.backtest_stats,
+            money_flow     = req.money_flow,
+            mtf            = req.mtf,
+            latest_bar     = req.latest_bar,
+            history        = req.history or [],
+        )
+        return {"response": response}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─── Money Flow ───────────────────────────────────────────────────────────────
@@ -88,7 +130,7 @@ async def get_money_flow(
     }
 
 
-# ─── MTF Confirmation ─────────────────────────────────────────────────────────
+# ─── MTF ─────────────────────────────────────────────────────────────────────
 
 @app.get("/api/mtf")
 async def get_mtf(
@@ -96,23 +138,17 @@ async def get_mtf(
     timeframe: str = Query("4H"),
     signal:    str = Query("green_dot"),
 ):
-    """
-    Fetch higher timeframe data and compute confirmation score for a signal.
-    Also computes money flow on the primary timeframe for a combined grade.
-    """
     symbol = validate_symbol(symbol)
     htf    = get_higher_timeframe(timeframe)
 
-    # Primary TF money flow
     try:
         df_primary = await fetch_ohlcv(symbol, timeframe, limit=150)
         df_primary = compute_all(df_primary)
         df_primary = compute_money_flow(df_primary)
         mf = compute_signal_strength(df_primary, signal, len(df_primary) - 2)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Primary TF fetch failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Primary TF failed: {e}")
 
-    # HTF confirmation
     try:
         mtf = await analyze_htf(symbol, timeframe, signal)
     except Exception as e:
@@ -121,20 +157,12 @@ async def get_mtf(
     grade_info = combined_score(mf["score"], mtf["htf_score"])
 
     return {
-        "symbol":        symbol,
-        "primary_tf":    timeframe,
-        "htf":           htf,
-        "signal":        signal,
-        # Primary TF money flow
-        "mf_score":      mf["score"],
-        "mf_strength":   mf["strength"],
-        "mf_bias":       mf["mf_bias"],
-        "mf_confluence": mf["confluence"],
-        # HTF confirmation
+        "symbol": symbol, "primary_tf": timeframe, "htf": htf, "signal": signal,
+        "mf_score": mf["score"], "mf_strength": mf["strength"],
+        "mf_bias": mf["mf_bias"], "mf_confluence": mf["confluence"],
         **mtf,
-        # Combined grade
         "overall_score": grade_info["overall_score"],
-        "grade":         grade_info["grade"],
+        "grade": grade_info["grade"],
     }
 
 
@@ -183,11 +211,12 @@ async def test_alert(symbol: str = "BTC/USDT", timeframe: str = "4H"):
         "htf_confirmation": "CONFIRMED", "htf_score": 78,
         "htf_trend": "BULLISH", "htf_wt1": 12.3, "htf_wt2": -5.4,
         "htf_cmf": 0.12, "htf_mfi": 38.0, "htf_obv_trend": "Rising ↑",
-        "htf_reasons": ["✅ Daily WT bullish — WT1 above WT2",
-                        "✅ Daily CMF +0.120 — money flowing in"],
+        "htf_reasons": ["✅ Daily WT bullish — WT1 above WT2"],
         "should_trade": True, "filter_reason": None,
     }
-    ok = await send_alert(symbol, timeframe, "green_dot", fake_bar, fake_mf, fake_mtf)
+    fake_analysis = "This Green Dot signal on BTC/USDT 4H shows strong confluence across all layers. The WT2 at -61 indicates deeply oversold conditions while the Daily timeframe confirms bullish momentum with a CMF of +0.12. Volume is running at 2.4x average, suggesting institutional participation behind this move. All five money flow indicators align bullishly, giving this setup exceptional conviction. Grade: A — Excellent."
+
+    ok = await send_alert(symbol, timeframe, "green_dot", fake_bar, fake_mf, fake_mtf, fake_analysis)
     return {"status": "sent" if ok else "failed",
             "message": "Check your Telegram" if ok else "Check .env credentials"}
 
@@ -205,21 +234,19 @@ async def check_now(symbol: str = "BTC/USDT", timeframe: str = "4H"):
     latest_closed = df.iloc[-2]
     signal_types  = [
         "green_dot", "red_dot", "gold_dot",
-        "bull_div",  "bear_div", "bull_div_hidden", "bear_div_hidden",
+        "bull_div", "bear_div", "bull_div_hidden", "bear_div_hidden",
     ]
     active = [s for s in signal_types if bool(latest_closed.get(s, False))]
     mf     = get_money_flow_summary(df, bar_idx=-2)
 
     return {
-        "symbol":         symbol,
-        "timeframe":      timeframe,
-        "timestamp":      str(latest_closed["timestamp"]),
-        "close":          float(latest_closed["close"]),
-        "wt1":            round(float(latest_closed["wt1"]), 2),
-        "wt2":            round(float(latest_closed["wt2"]), 2),
-        "active_signals": active,
-        "money_flow":     mf,
-        "message":        f"{len(active)} signal(s) active" if active else "No signals on latest candle",
+        "symbol": symbol, "timeframe": timeframe,
+        "timestamp": str(latest_closed["timestamp"]),
+        "close": float(latest_closed["close"]),
+        "wt1": round(float(latest_closed["wt1"]), 2),
+        "wt2": round(float(latest_closed["wt2"]), 2),
+        "active_signals": active, "money_flow": mf,
+        "message": f"{len(active)} signal(s) active" if active else "No signals on latest candle",
     }
 
 
@@ -293,7 +320,7 @@ async def run_research(req: ResearchRequest):
     )
 
 
-# ─── Backtest Only ────────────────────────────────────────────────────────────
+# ─── Backtest ─────────────────────────────────────────────────────────────────
 
 @app.post("/api/backtest")
 async def backtest_only(req: ResearchRequest):
@@ -346,7 +373,8 @@ async def meta():
     }
 
 
+# ─── Entry ────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

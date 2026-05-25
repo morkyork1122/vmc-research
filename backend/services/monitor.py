@@ -1,7 +1,5 @@
 """
-Signal Monitor — VMC + Money Flow + MTF Confirmation.
-Only fires Telegram alerts when HTF agrees (or is neutral).
-AGAINST signals are logged but suppressed.
+Signal Monitor — VMC + Money Flow + MTF + AI Auto-Analysis.
 """
 
 import asyncio
@@ -13,6 +11,7 @@ from indicators.vmc_cipher_b import compute_all
 from indicators.money_flow import compute_money_flow, compute_signal_strength
 from services.data_fetcher import fetch_ohlcv, validate_symbol
 from services.mtf_analyzer import analyze_htf, combined_score
+from services.ai_chat import generate_auto_analysis
 from services.notifier import send_alert, send_startup_message
 
 STATE_FILE = Path("monitor_state.json")
@@ -27,11 +26,9 @@ ACTIVE_SIGNALS = [
     "bull_div",  "bear_div", "bull_div_hidden", "bear_div_hidden",
 ]
 
-# Minimum money flow score to fire an alert (0 = disabled)
-MIN_MF_SCORE = 0
-
-# If True, suppress alerts when HTF says AGAINST
+MIN_MF_SCORE       = 0
 FILTER_AGAINST_HTF = True
+ENABLE_AI_ANALYSIS = True  # Set False to skip AI analysis and save API credits
 
 
 def _load_state() -> dict:
@@ -70,7 +67,6 @@ class PairMonitor:
         _save_state(self.state)
 
     async def _check_once(self) -> None:
-        # ── Fetch + compute ───────────────────────────────────────────────────
         try:
             df = await fetch_ohlcv(self.symbol, self.timeframe, limit=150)
         except Exception as e:
@@ -111,39 +107,39 @@ class PairMonitor:
             if self._already_alerted(sig, ts):
                 continue
 
-            # ── Money Flow strength ───────────────────────────────────────────
+            # Money Flow
             mf = compute_signal_strength(df, sig, closed_idx)
 
-            # Skip if below minimum score threshold
             if MIN_MF_SCORE > 0 and mf["score"] < MIN_MF_SCORE:
-                print(f"[Monitor] Filtered (low MF score {mf['score']}) — {self.symbol} {sig}")
+                print(f"[Monitor] Filtered (MF score {mf['score']}) — {self.symbol} {sig}")
                 self._mark_alerted(sig, ts)
                 continue
 
-            # ── MTF Confirmation ──────────────────────────────────────────────
+            # MTF Confirmation
             mtf = await analyze_htf(self.symbol, self.timeframe, sig)
 
-            # Suppress if HTF is against and filter is enabled
             if FILTER_AGAINST_HTF and not mtf["should_trade"]:
-                print(
-                    f"[Monitor] Suppressed (HTF AGAINST) — {self.symbol} {self.timeframe} "
-                    f"{sig} | {mtf['filter_reason']}"
-                )
+                print(f"[Monitor] Suppressed (HTF AGAINST) — {self.symbol} {sig} | {mtf['filter_reason']}")
                 self._mark_alerted(sig, ts)
                 continue
 
-            # ── Overall grade ─────────────────────────────────────────────────
+            # AI Auto-Analysis
+            analysis = ""
+            if ENABLE_AI_ANALYSIS:
+                analysis = await generate_auto_analysis(
+                    symbol=self.symbol, timeframe=self.timeframe,
+                    signal_type=sig, bar=bar, mf=mf, mtf=mtf,
+                )
+
             grade_info = combined_score(mf["score"], mtf["htf_score"])
 
             print(
                 f"[Monitor] 🔔 {sig} | {self.symbol} {self.timeframe} | "
-                f"price={bar['close']:.2f} | "
-                f"MF={mf['strength']} | "
-                f"HTF={mtf['htf_confirmation']} ({mtf['htf_timeframe']}) | "
-                f"Grade={grade_info['grade']}"
+                f"price={bar['close']:.2f} | MF={mf['strength']} | "
+                f"HTF={mtf['htf_confirmation']} | Grade={grade_info['grade'][:1]}"
             )
 
-            await send_alert(self.symbol, self.timeframe, sig, bar, mf, mtf)
+            await send_alert(self.symbol, self.timeframe, sig, bar, mf, mtf, analysis)
             self._mark_alerted(sig, ts)
 
     async def run(self) -> None:

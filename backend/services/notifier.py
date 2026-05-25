@@ -1,5 +1,5 @@
 """
-Telegram Notifier — VMC + Money Flow + MTF Confirmation alerts.
+Telegram Notifier — VMC + Money Flow + MTF + AI Auto-Analysis alerts.
 """
 
 import os
@@ -24,18 +24,14 @@ DIRECTION = {
     "red_dot": "SHORT",  "bear_div": "SHORT", "bear_div_hidden": "SHORT",
 }
 
-STRENGTH_EMOJI  = {"STRONG": "🔥", "MODERATE": "⚡", "WEAK": "⚠️"}
-BIAS_EMOJI      = {"BULLISH": "📈", "BEARISH": "📉", "NEUTRAL": "➖"}
-CONFIRM_EMOJI   = {"CONFIRMED": "✅", "NEUTRAL": "⚡", "AGAINST": "❌"}
+STRENGTH_EMOJI = {"STRONG": "🔥", "MODERATE": "⚡", "WEAK": "⚠️"}
+BIAS_EMOJI     = {"BULLISH": "📈", "BEARISH": "📉", "NEUTRAL": "➖"}
+CONFIRM_EMOJI  = {"CONFIRMED": "✅", "NEUTRAL": "⚡", "AGAINST": "❌"}
 
 
 def _build_message(
-    symbol: str,
-    timeframe: str,
-    signal_type: str,
-    bar: dict,
-    mf: dict = None,
-    mtf: dict = None,
+    symbol: str, timeframe: str, signal_type: str,
+    bar: dict, mf: dict = None, mtf: dict = None, analysis: str = None,
 ) -> str:
     emoji  = SIGNAL_EMOJI.get(signal_type, "⚡")
     label  = SIGNAL_LABEL.get(signal_type, signal_type)
@@ -64,7 +60,7 @@ def _build_message(
         f"  RSI+MFI : `{rsimfi:.2f}`\n"
     )
 
-    # Money Flow section
+    # Money Flow
     if mf and mf.get("strength") not in (None, "UNKNOWN"):
         strength   = mf.get("strength", "—")
         mf_bias    = mf.get("mf_bias", "NEUTRAL")
@@ -93,17 +89,17 @@ def _build_message(
         if reasons:
             msg += f"  💡 _{reasons[0]}_\n"
 
-    # MTF Confirmation section
+    # MTF Confirmation
     if mtf:
-        htf_tf     = mtf.get("htf_label", mtf.get("htf_timeframe", "HTF"))
-        confirm    = mtf.get("htf_confirmation", "NEUTRAL")
-        htf_score  = mtf.get("htf_score", 50)
-        htf_trend  = mtf.get("htf_trend", "—")
-        htf_wt1    = mtf.get("htf_wt1", 0)
-        htf_wt2    = mtf.get("htf_wt2", 0)
-        htf_cmf    = mtf.get("htf_cmf", 0)
-        c_emoji    = CONFIRM_EMOJI.get(confirm, "⚡")
-        filter_r   = mtf.get("filter_reason")
+        htf_tf    = mtf.get("htf_label", mtf.get("htf_timeframe", "HTF"))
+        confirm   = mtf.get("htf_confirmation", "NEUTRAL")
+        htf_score = mtf.get("htf_score", 50)
+        htf_trend = mtf.get("htf_trend", "—")
+        htf_wt1   = mtf.get("htf_wt1", 0)
+        htf_wt2   = mtf.get("htf_wt2", 0)
+        htf_cmf   = mtf.get("htf_cmf", 0)
+        c_emoji   = CONFIRM_EMOJI.get(confirm, "⚡")
+        filter_r  = mtf.get("filter_reason")
         htf_reasons = mtf.get("htf_reasons", [])
 
         msg += (
@@ -133,30 +129,34 @@ def _build_message(
                 grade = "D ❌ Avoid"
             msg += f"  🏆 Grade  : *{grade}*\n"
 
+    # AI Auto-Analysis
+    if analysis:
+        msg += (
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🤖 *AI Analysis*\n"
+            f"_{analysis}_\n"
+        )
+
     msg += (
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🕐 Candle   : `{ts}`\n"
-        f"⚠️ _For reference only. Not financial advice._"
+        f"⚠️ _Not financial advice._"
     )
     return msg
 
 
 async def send_alert(
-    symbol: str,
-    timeframe: str,
-    signal_type: str,
-    bar: dict,
-    mf: dict = None,
-    mtf: dict = None,
+    symbol: str, timeframe: str, signal_type: str,
+    bar: dict, mf: dict = None, mtf: dict = None, analysis: str = None,
 ) -> bool:
     token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
     if not token or not chat_id:
-        print("[Notifier] Telegram not configured — skipping alert")
+        print("[Notifier] Telegram not configured — skipping")
         return False
 
-    message = _build_message(symbol, timeframe, signal_type, bar, mf, mtf)
+    message = _build_message(symbol, timeframe, signal_type, bar, mf, mtf, analysis)
     url     = f"https://api.telegram.org/bot{token}/sendMessage"
 
     try:
@@ -187,8 +187,7 @@ async def send_startup_message(pairs: list) -> None:
         f"✅ VMC Cipher B signals\n"
         f"💵 Money Flow analysis\n"
         f"🔭 Multi-timeframe confirmation\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🟢 Green/Gold = Buy  |  🔴 Red = Sell"
+        f"🤖 AI auto-analysis on every alert"
     )
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
