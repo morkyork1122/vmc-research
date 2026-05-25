@@ -797,41 +797,30 @@ const runLiveScan = async () => {
   setMfLoading(true);
   setError(null);
   try {
-    const runLiveScan = async () => {
-      if (busy) return;
-      setMfLoading(true);
-      setError(null);
-      try {
-        const r = await fetch(
-          `${API_BASE}/live-scan?symbol=${encodeURIComponent(asset)}&timeframe=${timeframe}&signal=${activeSig}`
-        );
-        if (!r.ok) throw new Error(`Error ${r.status}`);
-        const d = await r.json();
-    
-        setMfData(d.money_flow);
-        setMtfData(d.mtf ? { ...d.mtf, overall_score: d.overall_score, grade: d.grade } : null);
-        setResult(prev => ({
-          ...(prev || {}),
-          symbol:         d.symbol,
-          timeframe:      d.timeframe,
-          mode:           "live",
-          candles_used:   150,
-          backtest_stats: prev?.backtest_stats || null,
-          recent_trades:  prev?.recent_trades  || [],
-          ai_report:      prev?.ai_report      || null,
-          latest_signals: [{ close: d.close, wt1: d.wt1, wt2: d.wt2, timestamp: d.timestamp }],
-        }));
-    
-        if (d.ai_analysis) {
-          setChatOpen(true);
-        }
-        setTab("mf");
-      } catch(e) {
-        setError(e.message);
-      } finally {
-        setMfLoading(false);
-      }
+    const r = await fetch(
+      `${API_BASE}/live-scan?symbol=${encodeURIComponent(asset)}&timeframe=${timeframe}&signal=${activeSig}`
+    );
+    if (!r.ok) throw new Error(`Error ${r.status}`);
+    const d = await r.json();
+
+    setMfData(d.money_flow);
+    setMtfData(d.mtf ? { ...d.mtf, overall_score: d.overall_score, grade: d.grade } : null);
+    setResult(prev => ({
+      ...(prev || {}),
+      symbol:         d.symbol,
+      timeframe:      d.timeframe,
+      mode:           "live",
+      candles_used:   150,
+      backtest_stats: prev?.backtest_stats || null,
+      recent_trades:  prev?.recent_trades  || [],
+      ai_report:      prev?.ai_report      || null,
+      latest_signals: [{ close: d.close, wt1: d.wt1, wt2: d.wt2, timestamp: d.timestamp }],
+    }));
+
+    if (d.ai_analysis) {
+      setChatOpen(true);
     }
+    setTab("mf");
   } catch(e) {
     setError(e.message);
   } finally {
