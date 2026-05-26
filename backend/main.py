@@ -46,14 +46,8 @@ app = FastAPI(title="VMC Cipher B Research API", version="5.0.0", lifespan=lifes
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://vmc-research.vercel.app",
-        "https://vmc-research-morkyork1122.vercel.app",
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "*",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
