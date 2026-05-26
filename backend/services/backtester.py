@@ -174,6 +174,37 @@ class BacktestResult:
             if losses and sum(t.pnl_pct for t in losses) != 0 else None
         )
 
+        def summary(self):
+        if not self.trades:
+            return {"error": "No signals found in the data range."}
+
+        def safe(val, default=0):
+            try:
+                if val is None: return default
+                import math
+                if math.isnan(val) or math.isinf(val): return default
+                return val
+            except Exception:
+                return default
+
+        wins   = [t for t in self.trades if t.result == "win"]
+        losses = [t for t in self.trades if t.result == "loss"]
+        total  = len(self.trades)
+
+        win_rate  = safe(round(len(wins) / total * 100, 1)) if total else 0
+        avg_win   = safe(round(float(np.mean([t.pnl_pct for t in wins])), 2))   if wins   else 0
+        avg_loss  = safe(round(float(np.mean([t.pnl_pct for t in losses])), 2)) if losses else 0
+        avg_rr    = safe(round(abs(avg_win / avg_loss), 2)) if avg_loss != 0 else 0
+
+        pnls         = [t.pnl_pct for t in self.trades]
+        cumulative   = np.cumsum(pnls)
+        peak         = np.maximum.accumulate(cumulative)
+        max_drawdown = safe(round(float(np.max(peak - cumulative)), 2)) if len(pnls) else 0
+
+        loss_sum = sum(t.pnl_pct for t in losses)
+        win_sum  = sum(t.pnl_pct for t in wins)
+        profit_factor = safe(round(win_sum / abs(loss_sum), 2)) if losses and loss_sum != 0 else None
+
         by_signal = {}
         for sig in ["green_dot","red_dot","gold_dot","bull_div","bear_div","bull_div_hidden","bear_div_hidden"]:
             sig_trades = [t for t in self.trades if t.signal_type == sig]
@@ -182,9 +213,12 @@ class BacktestResult:
             sig_wins = [t for t in sig_trades if t.result == "win"]
             by_signal[sig] = {
                 "total":    len(sig_trades),
-                "win_rate": round(len(sig_wins) / len(sig_trades) * 100, 1),
-                "avg_pnl":  round(np.mean([t.pnl_pct for t in sig_trades]), 2),
+                "win_rate": safe(round(len(sig_wins) / len(sig_trades) * 100, 1)),
+                "avg_pnl":  safe(round(float(np.mean([t.pnl_pct for t in sig_trades])), 2)),
             }
+
+        wt2_wins   = safe(round(float(np.mean([t.wt2_at_entry for t in wins])), 2))   if wins   else 0
+        wt2_losses = safe(round(float(np.mean([t.wt2_at_entry for t in losses])), 2)) if losses else 0
 
         return {
             "total_trades":  total,
@@ -196,10 +230,10 @@ class BacktestResult:
             "avg_rr":        avg_rr,
             "profit_factor": profit_factor,
             "max_drawdown":  max_drawdown,
-            "total_pnl":     round(sum(pnls), 2),
+            "total_pnl":     safe(round(sum(pnls), 2)),
             "by_signal":     by_signal,
-            "avg_wt2_at_winning_entry":  round(float(np.mean([t.wt2_at_entry for t in wins])), 2)  if wins   else 0,
-            "avg_wt2_at_losing_entry":   round(float(np.mean([t.wt2_at_entry for t in losses])), 2) if losses else 0,
+            "avg_wt2_at_winning_entry": wt2_wins,
+            "avg_wt2_at_losing_entry":  wt2_losses,
         }
 
     def recent_trades(self, n: int = 10):
