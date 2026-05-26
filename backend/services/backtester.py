@@ -74,20 +74,23 @@ class VMCBacktester:
         signals = []
         df = self.df
         for i in range(1, len(df)):
-            if self.cfg.use_green_dot and df["green_dot"].iloc[i]:
-                signals.append((i, "long", "green_dot"))
-            if self.cfg.use_gold_dot and df["gold_dot"].iloc[i]:
-                signals.append((i, "long", "gold_dot"))
-            if self.cfg.use_bull_div and df["bull_div"].iloc[i]:
-                signals.append((i, "long", "bull_div"))
-            if self.cfg.use_bull_div_hidden and df["bull_div_hidden"].iloc[i]:
-                signals.append((i, "long", "bull_div_hidden"))
-            if self.cfg.use_red_dot and df["red_dot"].iloc[i]:
-                signals.append((i, "short", "red_dot"))
-            if self.cfg.use_bear_div and df["bear_div"].iloc[i]:
-                signals.append((i, "short", "bear_div"))
-            if self.cfg.use_bear_div_hidden and df["bear_div_hidden"].iloc[i]:
-                signals.append((i, "short", "bear_div_hidden"))
+            try:
+                if self.cfg.use_green_dot and "green_dot" in df.columns and df["green_dot"].iloc[i]:
+                    signals.append((i, "long", "green_dot"))
+                if self.cfg.use_gold_dot and "gold_dot" in df.columns and df["gold_dot"].iloc[i]:
+                    signals.append((i, "long", "gold_dot"))
+                if self.cfg.use_bull_div and "bull_div" in df.columns and df["bull_div"].iloc[i]:
+                    signals.append((i, "long", "bull_div"))
+                if self.cfg.use_bull_div_hidden and "bull_div_hidden" in df.columns and df["bull_div_hidden"].iloc[i]:
+                    signals.append((i, "long", "bull_div_hidden"))
+                if self.cfg.use_red_dot and "red_dot" in df.columns and df["red_dot"].iloc[i]:
+                    signals.append((i, "short", "red_dot"))
+                if self.cfg.use_bear_div and "bear_div" in df.columns and df["bear_div"].iloc[i]:
+                    signals.append((i, "short", "bear_div"))
+                if self.cfg.use_bear_div_hidden and "bear_div_hidden" in df.columns and df["bear_div_hidden"].iloc[i]:
+                    signals.append((i, "short", "bear_div_hidden"))
+            except Exception:
+                continue
         return signals
 
     def run(self):
