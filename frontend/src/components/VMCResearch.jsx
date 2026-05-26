@@ -534,9 +534,16 @@ export default function VMCResearch() {
   const stepRef = useRef(0);
 
   const busy = loading || mfLoading || mtfLoading;
-  const toggleSig = k => setSigs(p => p.includes(k)?p.filter(x=>x!==k):[...p,k]);
+  const toggleSig = k => setSigs(p => {
+    if (p.includes(k) && p.length === 1) return p; // keep at least 1
+    return p.includes(k) ? p.filter(x=>x!==k) : [...p,k];
+  });
 
   const runPipeline = async (mode="full") => {
+    if (sigs.length === 0) {
+      setError("Please select at least one signal type before running.");
+      return;
+    }
     setLoading(true); setError(null); setResult(null);
     stepRef.current=0; setLoadStep(0);
     const total=mode==="full"?LOADING_STEPS.length:6;
@@ -579,6 +586,10 @@ export default function VMCResearch() {
 
   const runLiveScan = async () => {
     if (busy) return;
+    if (sigs.length === 0) {
+      setError("Please select at least one signal type before scanning.");
+      return;
+    }
     setMfLoading(true);
     setError(null);
     try {
