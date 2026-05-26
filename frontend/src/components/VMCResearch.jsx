@@ -534,10 +534,7 @@ export default function VMCResearch() {
   const stepRef = useRef(0);
 
   const busy = loading || mfLoading || mtfLoading;
-  const toggleSig = k => setSigs(p => {
-    if (p.includes(k) && p.length === 1) return p; // keep at least 1
-    return p.includes(k) ? p.filter(x=>x!==k) : [...p,k];
-  });
+  const toggleSig = k => setSigs(p => p.includes(k)?p.filter(x=>x!==k):[...p,k]);
 
   const runPipeline = async (mode="full") => {
     if (sigs.length === 0) {
