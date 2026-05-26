@@ -2,22 +2,29 @@
 VMC Cipher B Research API v5
 VMC + Money Flow + MTF + AI Chat + Auto-Analysis + 24/7 Monitor
 """
-from fastapi.responses import JSONResponse
-import pandas as pd
+
 from dotenv import load_dotenv
 load_dotenv()
 
+import math
+import json
+import pandas as pd
+import os
+
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import uvicorn, os
+import uvicorn
 
 from monitor_config import MONITORED_PAIRS, DEFAULT_SIGNALS
 from models import ResearchRequest, ResearchResponse
 from indicators.vmc_cipher_b import compute_all, get_latest_signals
-from indicators.money_flow import compute_money_flow, get_money_flow_summary, compute_signal_strength
+from indicators.money_flow import (
+    compute_money_flow, get_money_flow_summary, compute_signal_strength
+)
 from services.data_fetcher import fetch_ohlcv, validate_symbol
 from services.backtester import VMCBacktester, BacktestConfig
 from services.ai_analyst import generate_research_report
@@ -26,6 +33,31 @@ from services.mtf_analyzer import analyze_htf, combined_score, get_higher_timefr
 from services.monitor import monitor_manager
 from services.notifier import send_alert
 from services.webhook_receiver import router as webhook_router
+
+
+# ─── NaN Sanitizer ────────────────────────────────────────────────────────────
+
+def sanitize(obj):
+    """Recursively replace NaN/Infinity with None in any structure."""
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize(i) for i in obj]
+    return obj
+
+
+class SanitizedJSONResponse(Response):
+    """Custom response class that strips NaN/Inf before serialising."""
+    media_type = "application/json"
+
+    def render(self, content) -> bytes:
+        return json.dumps(
+            sanitize(content),
+            allow_nan=False,
+            default=str,
+        ).encode("utf-8")
 
 
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
@@ -43,18 +75,15 @@ async def lifespan(app: FastAPI):
     await monitor_manager.stop()
 
 
-app = FastAPI(title="VMC Cipher B Research API", version="5.0.0", lifespan=lifespan)
+# ─── App ──────────────────────────────────────────────────────────────────────
 
-@app.options("/{rest_of_path:path}")
-async def preflight(rest_of_path: str):
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "*",
-            "Access-Control-Allow-Headers": "*",
-        }
-    )
+app = FastAPI(
+    title="VMC Cipher B Research API",
+    version="5.0.0",
+    lifespan=lifespan,
+    default_response_class=SanitizedJSONResponse,
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -62,27 +91,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-from fastapi.responses import JSONResponse
-from fastapi import Request
+
+app.include_router(webhook_router)
+
+
+# ─── Global Error Handler (returns CORS headers even on crash) ────────────────
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
         content={"detail": str(exc)},
-        headers={"Access-Control-Allow-Origin": "*"},
+        headers={
+            "Access-Control-Allow-Origin":  "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        },
     )
 
-app.include_router(webhook_router)
 
-
-# ─── Chat Models ──────────────────────────────────────────────────────────────
+# ─── Chat Model ───────────────────────────────────────────────────────────────
 
 class ChatMessage(BaseModel):
     message:        str
-    symbol:         str          = "BTC/USDT"
-    timeframe:      str          = "4H"
-    signal_type:    Optional[str] = None
+    symbol:         str            = "BTC/USDT"
+    timeframe:      str            = "4H"
+    signal_type:    Optional[str]  = None
     backtest_stats: Optional[dict] = None
     money_flow:     Optional[dict] = None
     mtf:            Optional[dict] = None
@@ -105,10 +139,6 @@ async def health():
 
 @app.post("/api/chat")
 async def ai_chat(req: ChatMessage):
-    """
-    Chat with the AI analyst using current dashboard context.
-    Sends the question along with all available market data.
-    """
     try:
         response = await chat(
             message        = req.message,
@@ -124,6 +154,75 @@ async def ai_chat(req: ChatMessage):
         return {"response": response}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Live Scan ────────────────────────────────────────────────────────────────
+
+@app.get("/api/live-scan")
+async def live_scan(
+    symbol:    str = Query("BTC/USDT"),
+    timeframe: str = Query("4H"),
+    signal:    str = Query("green_dot"),
+):
+    symbol = validate_symbol(symbol)
+
+    try:
+        df = await fetch_ohlcv(symbol, timeframe, limit=150)
+        df = compute_all(df)
+        df = compute_money_flow(df)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Fetch failed: {e}")
+
+    closed_idx    = len(df) - 2
+    latest_closed = df.iloc[closed_idx]
+
+    bar = {
+        "timestamp": str(latest_closed["timestamp"]),
+        "close":     round(float(latest_closed["close"]), 4),
+        "wt1":       round(float(latest_closed["wt1"]),   2),
+        "wt2":       round(float(latest_closed["wt2"]),   2),
+        "rsimfi":    round(float(latest_closed["rsimfi"])
+                     if pd.notna(latest_closed["rsimfi"]) else 0.0, 2),
+    }
+
+    signal_types   = ["green_dot","red_dot","gold_dot","bull_div","bear_div","bull_div_hidden","bear_div_hidden"]
+    active_signals = [s for s in signal_types if bool(latest_closed.get(s, False))]
+
+    mf = compute_signal_strength(df, signal, closed_idx)
+
+    try:
+        mtf = await analyze_htf(symbol, timeframe, signal)
+    except Exception:
+        mtf = None
+
+    analysis = ""
+    if mtf:
+        try:
+            analysis = await generate_auto_analysis(
+                symbol=symbol, timeframe=timeframe,
+                signal_type=signal, bar=bar, mf=mf, mtf=mtf or {},
+            )
+        except Exception:
+            pass
+
+    grade_info = combined_score(mf["score"], mtf["htf_score"] if mtf else 50)
+
+    return {
+        "symbol":         symbol,
+        "timeframe":      timeframe,
+        "signal":         signal,
+        "timestamp":      bar["timestamp"],
+        "close":          bar["close"],
+        "wt1":            bar["wt1"],
+        "wt2":            bar["wt2"],
+        "rsimfi":         bar["rsimfi"],
+        "active_signals": active_signals,
+        "money_flow":     mf,
+        "mtf":            mtf,
+        "overall_score":  grade_info["overall_score"],
+        "grade":          grade_info["grade"],
+        "ai_analysis":    analysis,
+    }
 
 
 # ─── Money Flow ───────────────────────────────────────────────────────────────
@@ -148,9 +247,13 @@ async def get_money_flow(
     bar        = df.iloc[closed_idx]
 
     return {
-        "symbol": symbol, "timeframe": timeframe, "signal": signal,
-        "timestamp": str(bar["timestamp"]), "close": round(float(bar["close"]), 4),
-        **summary, **strength,
+        "symbol":    symbol,
+        "timeframe": timeframe,
+        "signal":    signal,
+        "timestamp": str(bar["timestamp"]),
+        "close":     round(float(bar["close"]), 4),
+        **summary,
+        **strength,
     }
 
 
@@ -163,7 +266,6 @@ async def get_mtf(
     signal:    str = Query("green_dot"),
 ):
     symbol = validate_symbol(symbol)
-    htf    = get_higher_timeframe(timeframe)
 
     try:
         df_primary = await fetch_ohlcv(symbol, timeframe, limit=150)
@@ -181,12 +283,17 @@ async def get_mtf(
     grade_info = combined_score(mf["score"], mtf["htf_score"])
 
     return {
-        "symbol": symbol, "primary_tf": timeframe, "htf": htf, "signal": signal,
-        "mf_score": mf["score"], "mf_strength": mf["strength"],
-        "mf_bias": mf["mf_bias"], "mf_confluence": mf["confluence"],
+        "symbol":        symbol,
+        "primary_tf":    timeframe,
+        "htf":           get_higher_timeframe(timeframe),
+        "signal":        signal,
+        "mf_score":      mf["score"],
+        "mf_strength":   mf["strength"],
+        "mf_bias":       mf["mf_bias"],
+        "mf_confluence": mf["confluence"],
         **mtf,
         "overall_score": grade_info["overall_score"],
-        "grade": grade_info["grade"],
+        "grade":         grade_info["grade"],
     }
 
 
@@ -194,15 +301,16 @@ async def get_mtf(
 
 @app.get("/api/monitor/status")
 async def monitor_status():
-    import json
+    import json as _json
     from pathlib import Path
     state_file = Path("monitor_state.json")
     state = {}
     if state_file.exists():
         try:
-            state = json.loads(state_file.read_text())
+            state = _json.loads(state_file.read_text())
         except Exception:
             pass
+
     monitors = []
     for m in monitor_manager._monitors:
         last_signals = {
@@ -210,9 +318,11 @@ async def monitor_status():
             if k.startswith(f"{m.symbol}|{m.timeframe}|")
         }
         monitors.append({
-            "symbol": m.symbol, "timeframe": m.timeframe,
-            "signals": m.signals, "poll_every_s": m.interval,
-            "last_alerts": last_signals,
+            "symbol":       m.symbol,
+            "timeframe":    m.timeframe,
+            "signals":      m.signals,
+            "poll_every_s": m.interval,
+            "last_alerts":  last_signals,
         })
     return {"active_monitors": monitors, "total": len(monitors)}
 
@@ -227,8 +337,10 @@ async def test_alert(symbol: str = "BTC/USDT", timeframe: str = "4H"):
         "strength": "STRONG", "score": 82, "mf_bias": "BULLISH",
         "confluence": 4, "cmf": 0.18, "mfi": 22.0,
         "obv_trend": "Rising ↑", "vol_ratio": 2.4, "vol_spike": True,
-        "reasons": ["✅ CMF +0.180 — institutions buying",
-                    "✅ MFI 22 — deeply oversold"],
+        "reasons": [
+            "✅ CMF +0.180 — institutions buying",
+            "✅ MFI 22 — deeply oversold",
+        ],
     }
     fake_mtf = {
         "htf_timeframe": "1D", "htf_label": "Daily",
@@ -238,11 +350,17 @@ async def test_alert(symbol: str = "BTC/USDT", timeframe: str = "4H"):
         "htf_reasons": ["✅ Daily WT bullish — WT1 above WT2"],
         "should_trade": True, "filter_reason": None,
     }
-    fake_analysis = "This Green Dot signal on BTC/USDT 4H shows strong confluence across all layers. The WT2 at -61 indicates deeply oversold conditions while the Daily timeframe confirms bullish momentum with a CMF of +0.12. Volume is running at 2.4x average, suggesting institutional participation behind this move. All five money flow indicators align bullishly, giving this setup exceptional conviction. Grade: A — Excellent."
-
+    fake_analysis = (
+        "This Green Dot signal on BTC/USDT 4H shows strong confluence across all layers. "
+        "WT2 at -61 indicates deeply oversold conditions while the Daily confirms bullish momentum. "
+        "Volume running at 2.4x average suggests institutional participation. "
+        "All five money flow indicators align bullishly. Grade: A — Excellent."
+    )
     ok = await send_alert(symbol, timeframe, "green_dot", fake_bar, fake_mf, fake_mtf, fake_analysis)
-    return {"status": "sent" if ok else "failed",
-            "message": "Check your Telegram" if ok else "Check .env credentials"}
+    return {
+        "status":  "sent" if ok else "failed",
+        "message": "Check your Telegram" if ok else "Check .env credentials",
+    }
 
 
 @app.post("/api/monitor/check-now")
@@ -258,19 +376,21 @@ async def check_now(symbol: str = "BTC/USDT", timeframe: str = "4H"):
     latest_closed = df.iloc[-2]
     signal_types  = [
         "green_dot", "red_dot", "gold_dot",
-        "bull_div", "bear_div", "bull_div_hidden", "bear_div_hidden",
+        "bull_div",  "bear_div", "bull_div_hidden", "bear_div_hidden",
     ]
     active = [s for s in signal_types if bool(latest_closed.get(s, False))]
     mf     = get_money_flow_summary(df, bar_idx=-2)
 
     return {
-        "symbol": symbol, "timeframe": timeframe,
-        "timestamp": str(latest_closed["timestamp"]),
-        "close": float(latest_closed["close"]),
-        "wt1": round(float(latest_closed["wt1"]), 2),
-        "wt2": round(float(latest_closed["wt2"]), 2),
-        "active_signals": active, "money_flow": mf,
-        "message": f"{len(active)} signal(s) active" if active else "No signals on latest candle",
+        "symbol":         symbol,
+        "timeframe":      timeframe,
+        "timestamp":      str(latest_closed["timestamp"]),
+        "close":          float(latest_closed["close"]),
+        "wt1":            round(float(latest_closed["wt1"]), 2),
+        "wt2":            round(float(latest_closed["wt2"]), 2),
+        "active_signals": active,
+        "money_flow":     mf,
+        "message":        f"{len(active)} signal(s) active" if active else "No signals on latest candle",
     }
 
 
@@ -288,15 +408,20 @@ async def get_indicator(
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
     df = compute_all(df)
-    return {"symbol": symbol, "timeframe": timeframe, "candles": len(df),
-            "signals": get_latest_signals(df, n=limit)}
+    return {
+        "symbol":    symbol,
+        "timeframe": timeframe,
+        "candles":   len(df),
+        "signals":   get_latest_signals(df, n=limit),
+    }
 
 
-# ─── Research ─────────────────────────────────────────────────────────────────
+# ─── Full Research ────────────────────────────────────────────────────────────
 
 @app.post("/api/research", response_model=ResearchResponse)
 async def run_research(req: ResearchRequest):
     symbol = validate_symbol(req.symbol)
+
     try:
         df = await fetch_ohlcv(symbol, req.timeframe, limit=req.candle_limit)
     except Exception as e:
@@ -344,11 +469,12 @@ async def run_research(req: ResearchRequest):
     )
 
 
-# ─── Backtest ─────────────────────────────────────────────────────────────────
+# ─── Backtest Only ────────────────────────────────────────────────────────────
 
 @app.post("/api/backtest")
 async def backtest_only(req: ResearchRequest):
     symbol = validate_symbol(req.symbol)
+
     try:
         df = await fetch_ohlcv(symbol, req.timeframe, limit=req.candle_limit)
     except Exception as e:
@@ -374,8 +500,11 @@ async def backtest_only(req: ResearchRequest):
 
     bt_result = VMCBacktester(df, config).run()
     return {
-        "symbol": symbol, "timeframe": req.timeframe, "candles_used": len(df),
-        "summary": bt_result.summary(), "recent_trades": bt_result.recent_trades(n=20),
+        "symbol":         symbol,
+        "timeframe":      req.timeframe,
+        "candles_used":   len(df),
+        "summary":        bt_result.summary(),
+        "recent_trades":  bt_result.recent_trades(n=20),
         "latest_signals": get_latest_signals(df, n=10),
     }
 
@@ -397,80 +526,7 @@ async def meta():
     }
 
 
-# ─── Entry ────────────────────────────────────────────────────────────────────
-@app.get("/api/live-scan")
-async def live_scan(
-    symbol:    str = Query("BTC/USDT"),
-    timeframe: str = Query("4H"),
-    signal:    str = Query("green_dot"),
-):
-    """
-    One-shot endpoint: fetch live candles → compute everything →
-    return VMC signals + money flow + MTF + AI analysis.
-    """
-    symbol = validate_symbol(symbol)
-
-    # Fetch + compute
-    try:
-        df = await fetch_ohlcv(symbol, timeframe, limit=150)
-        df = compute_all(df)
-        df = compute_money_flow(df)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Fetch failed: {e}")
-
-    closed_idx    = len(df) - 2
-    latest_closed = df.iloc[closed_idx]
-
-    bar = {
-        "timestamp": str(latest_closed["timestamp"]),
-        "close":     round(float(latest_closed["close"]), 4),
-        "wt1":       round(float(latest_closed["wt1"]), 2),
-        "wt2":       round(float(latest_closed["wt2"]), 2),
-        "rsimfi":    round(float(latest_closed["rsimfi"]) if pd.notna(latest_closed["rsimfi"]) else 0.0, 2),
-    }
-
-    # Active signals on latest closed candle
-    signal_types = ["green_dot","red_dot","gold_dot","bull_div","bear_div","bull_div_hidden","bear_div_hidden"]
-    active_signals = [s for s in signal_types if bool(latest_closed.get(s, False))]
-
-    # Money flow
-    mf = compute_signal_strength(df, signal, closed_idx)
-
-    # MTF confirmation
-    try:
-        mtf = await analyze_htf(symbol, timeframe, signal)
-    except Exception:
-        mtf = None
-
-    # AI analysis
-    analysis = ""
-    if mtf:
-        try:
-            analysis = await generate_auto_analysis(
-                symbol=symbol, timeframe=timeframe,
-                signal_type=signal, bar=bar, mf=mf, mtf=mtf or {},
-            )
-        except Exception:
-            pass
-
-    grade_info = combined_score(mf["score"], mtf["htf_score"] if mtf else 50)
-
-    return {
-        "symbol":         symbol,
-        "timeframe":      timeframe,
-        "signal":         signal,
-        "timestamp":      bar["timestamp"],
-        "close":          bar["close"],
-        "wt1":            bar["wt1"],
-        "wt2":            bar["wt2"],
-        "rsimfi":         bar["rsimfi"],
-        "active_signals": active_signals,
-        "money_flow":     mf,
-        "mtf":            mtf,
-        "overall_score":  grade_info["overall_score"],
-        "grade":          grade_info["grade"],
-        "ai_analysis":    analysis,
-    }
+# ─── Entry Point ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
