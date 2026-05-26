@@ -50,6 +50,19 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.rolling(period).mean()
 
 
+def _safe(val, default=0):
+    import math
+    try:
+        if val is None:
+            return default
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
+    except Exception:
+        return default
+
+
 class VMCBacktester:
     def __init__(self, df: pd.DataFrame, config: BacktestConfig = None):
         self.df = df.copy().reset_index(drop=True)
@@ -113,24 +126,16 @@ class VMCBacktester:
             for j in range(entry_bar + 1, min(entry_bar + self.cfg.max_bars_in_trade + 1, len(df))):
                 bar = df.iloc[j]
                 if self.cfg.exit_on_opposite_signal:
-                    if direction == "long" and (bar["red_dot"] or bar["bear_div"]):
-                        trade.exit_bar = j
-                        trade.exit_price = bar["close"]
-                        break
-                    if direction == "short" and (bar["green_dot"] or bar["bull_div"]):
-                        trade.exit_bar = j
-                        trade.exit_price = bar["close"]
-                        break
+                    if direction == "long" and (bar.get("red_dot", False) or bar.get("bear_div", False)):
+                        trade.exit_bar = j; trade.exit_price = bar["close"]; break
+                    if direction == "short" and (bar.get("green_dot", False) or bar.get("bull_div", False)):
+                        trade.exit_bar = j; trade.exit_price = bar["close"]; break
                 if direction == "long":
-                    if bar["low"] <= sl:
-                        trade.exit_bar = j; trade.exit_price = sl; break
-                    if bar["high"] >= tp:
-                        trade.exit_bar = j; trade.exit_price = tp; break
+                    if bar["low"] <= sl: trade.exit_bar = j; trade.exit_price = sl; break
+                    if bar["high"] >= tp: trade.exit_bar = j; trade.exit_price = tp; break
                 else:
-                    if bar["high"] >= sl:
-                        trade.exit_bar = j; trade.exit_price = sl; break
-                    if bar["low"] <= tp:
-                        trade.exit_bar = j; trade.exit_price = tp; break
+                    if bar["high"] >= sl: trade.exit_bar = j; trade.exit_price = sl; break
+                    if bar["low"] <= tp: trade.exit_bar = j; trade.exit_price = tp; break
             else:
                 trade.exit_bar = min(entry_bar + self.cfg.max_bars_in_trade, len(df) - 1)
                 trade.exit_price = df["close"].iloc[trade.exit_bar]
@@ -159,51 +164,19 @@ class BacktestResult:
         losses = [t for t in self.trades if t.result == "loss"]
         total  = len(self.trades)
 
-        win_rate    = round(len(wins) / total * 100, 1) if total else 0
-        avg_win     = round(np.mean([t.pnl_pct for t in wins]), 2)   if wins   else 0
-        avg_loss    = round(np.mean([t.pnl_pct for t in losses]), 2) if losses else 0
-        avg_rr      = round(abs(avg_win / avg_loss), 2) if avg_loss != 0 else 0
-
-        pnls        = [t.pnl_pct for t in self.trades]
-        cumulative  = np.cumsum(pnls)
-        peak        = np.maximum.accumulate(cumulative)
-        max_drawdown = round(float(np.max(peak - cumulative)), 2) if len(pnls) else 0
-
-        profit_factor = (
-            round(sum(t.pnl_pct for t in wins) / abs(sum(t.pnl_pct for t in losses)), 2)
-            if losses and sum(t.pnl_pct for t in losses) != 0 else None
-        )
-
-        def summary(self):
-        if not self.trades:
-            return {"error": "No signals found in the data range."}
-
-        def safe(val, default=0):
-            try:
-                if val is None: return default
-                import math
-                if math.isnan(val) or math.isinf(val): return default
-                return val
-            except Exception:
-                return default
-
-        wins   = [t for t in self.trades if t.result == "win"]
-        losses = [t for t in self.trades if t.result == "loss"]
-        total  = len(self.trades)
-
-        win_rate  = safe(round(len(wins) / total * 100, 1)) if total else 0
-        avg_win   = safe(round(float(np.mean([t.pnl_pct for t in wins])), 2))   if wins   else 0
-        avg_loss  = safe(round(float(np.mean([t.pnl_pct for t in losses])), 2)) if losses else 0
-        avg_rr    = safe(round(abs(avg_win / avg_loss), 2)) if avg_loss != 0 else 0
+        win_rate    = _safe(round(len(wins) / total * 100, 1)) if total else 0
+        avg_win     = _safe(round(float(np.mean([t.pnl_pct for t in wins])), 2))   if wins   else 0
+        avg_loss    = _safe(round(float(np.mean([t.pnl_pct for t in losses])), 2)) if losses else 0
+        avg_rr      = _safe(round(abs(avg_win / avg_loss), 2)) if avg_loss != 0 else 0
 
         pnls         = [t.pnl_pct for t in self.trades]
         cumulative   = np.cumsum(pnls)
         peak         = np.maximum.accumulate(cumulative)
-        max_drawdown = safe(round(float(np.max(peak - cumulative)), 2)) if len(pnls) else 0
+        max_drawdown = _safe(round(float(np.max(peak - cumulative)), 2)) if len(pnls) else 0
 
         loss_sum = sum(t.pnl_pct for t in losses)
         win_sum  = sum(t.pnl_pct for t in wins)
-        profit_factor = safe(round(win_sum / abs(loss_sum), 2)) if losses and loss_sum != 0 else None
+        profit_factor = _safe(round(win_sum / abs(loss_sum), 2)) if losses and loss_sum != 0 else None
 
         by_signal = {}
         for sig in ["green_dot","red_dot","gold_dot","bull_div","bear_div","bull_div_hidden","bear_div_hidden"]:
@@ -213,12 +186,9 @@ class BacktestResult:
             sig_wins = [t for t in sig_trades if t.result == "win"]
             by_signal[sig] = {
                 "total":    len(sig_trades),
-                "win_rate": safe(round(len(sig_wins) / len(sig_trades) * 100, 1)),
-                "avg_pnl":  safe(round(float(np.mean([t.pnl_pct for t in sig_trades])), 2)),
+                "win_rate": _safe(round(len(sig_wins) / len(sig_trades) * 100, 1)),
+                "avg_pnl":  _safe(round(float(np.mean([t.pnl_pct for t in sig_trades])), 2)),
             }
-
-        wt2_wins   = safe(round(float(np.mean([t.wt2_at_entry for t in wins])), 2))   if wins   else 0
-        wt2_losses = safe(round(float(np.mean([t.wt2_at_entry for t in losses])), 2)) if losses else 0
 
         return {
             "total_trades":  total,
@@ -230,10 +200,10 @@ class BacktestResult:
             "avg_rr":        avg_rr,
             "profit_factor": profit_factor,
             "max_drawdown":  max_drawdown,
-            "total_pnl":     safe(round(sum(pnls), 2)),
+            "total_pnl":     _safe(round(sum(pnls), 2)),
             "by_signal":     by_signal,
-            "avg_wt2_at_winning_entry": wt2_wins,
-            "avg_wt2_at_losing_entry":  wt2_losses,
+            "avg_wt2_at_winning_entry": _safe(round(float(np.mean([t.wt2_at_entry for t in wins])), 2))   if wins   else 0,
+            "avg_wt2_at_losing_entry":  _safe(round(float(np.mean([t.wt2_at_entry for t in losses])), 2)) if losses else 0,
         }
 
     def recent_trades(self, n: int = 10):
