@@ -200,7 +200,7 @@ class BacktestResult:
         }
 
     def recent_trades(self, n: int = 10):
-        recent = self.trades[-n:]
+        recent = list(reversed(self.trades[-n:]))
         result = []
         for t in recent:
             result.append({
