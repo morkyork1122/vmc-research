@@ -2,6 +2,7 @@
 VMC Cipher B Research API v5
 VMC + Money Flow + MTF + AI Chat + Auto-Analysis + 24/7 Monitor
 """
+from fastapi.responses import JSONResponse
 import pandas as pd
 from dotenv import load_dotenv
 load_dotenv()
@@ -44,6 +45,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="VMC Cipher B Research API", version="5.0.0", lifespan=lifespan)
 
+@app.options("/{rest_of_path:path}")
+async def preflight(rest_of_path: str):
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
